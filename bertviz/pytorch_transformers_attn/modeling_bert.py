@@ -96,6 +96,8 @@ def load_tf_weights_in_bert(model, config, tf_checkpoint_path):
         arrays.append(array)
 
     for name, array in zip(names, arrays):
+        layer_name = name.replace('/', '.').replace('module.bert.', '')
+        layer_name = layer_name.replace('layer_', 'layer.')
         name = name.split('/')
         # adam_v and adam_m are variables used in AdamWeightDecayOptimizer to calculated m and v
         # which are not required for using pretrained model
@@ -103,41 +105,50 @@ def load_tf_weights_in_bert(model, config, tf_checkpoint_path):
             logger.info("Skipping {}".format("/".join(name)))
             continue
         pointer = model
-        for m_name in name:
-            if re.fullmatch(r'[A-Za-z]+_\d+', m_name):
-                l = re.split(r'_(\d+)', m_name)
-            else:
-                l = [m_name]
-            if l[0] == 'kernel' or l[0] == 'gamma':
-                pointer = getattr(pointer, 'weight')
-            elif l[0] == 'output_bias' or l[0] == 'beta':
-                pointer = getattr(pointer, 'bias')
-            elif l[0] == 'output_weights':
-                pointer = getattr(pointer, 'weight')
-            elif l[0] == 'squad':
-                pointer = getattr(pointer, 'classifier')
-            else:
-                try:
-                    pointer = getattr(pointer, l[0])
-                except AttributeError:
-                    logger.info("Skipping {}".format("/".join(name)))
-                    continue
-            if len(l) >= 2:
-                num = int(l[1])
-                pointer = pointer[num]
-        if m_name[-11:] == '_embeddings':
-            pointer = getattr(pointer, 'weight')
-        elif m_name == 'kernel':
+        last = name[-1]
+        if last == 'kernel' or last == 'gamma' or last == 'output_weights':
+            layer_name = layer_name.replace(last, '')
+            layer_name = layer_name+'weight'
+            try:
+                pointer = rec_getattr(pointer, layer_name)
+            except AttributeError:
+                print("Skipping Layer:", layer_name)
+                continue
+        elif last == 'output_bias' or last == 'beta':
+            layer_name = layer_name.replace(last, '')
+            layer_name = layer_name+'bias'
+            try:
+                pointer = rec_getattr(pointer, layer_name)
+            except AttributeError:
+                print("Skipping Layer:", layer_name)
+                continue
+        elif "_embeddings" in last:
+            layer_name = layer_name+'.weight'
+            try:
+                pointer=rec_getattr(pointer, layer_name)
+            except AttributeError:
+                print("Skipping Layer:", layer_name)
+                continue
+        else:    
+            try:
+                pointer = rec_getattr(pointer, layer_name)
+            except AttributeError:
+                logger.info("Skipping {}".format(layer_name))
+                print("Skipping Layer {}".format(layer_name))
+                continue
+        logger.info("Initialize PyTorch weight {}".format(layer_name))
+        #kernel weights are transposed in torch
+        if last=="kernel":
             array = np.transpose(array)
-        try:
-            assert pointer.shape == array.shape
-        except AssertionError as e:
-            e.args += (pointer.shape, array.shape)
-            raise
-        logger.info("Initialize PyTorch weight {}".format(name))
         pointer.data = torch.from_numpy(array)
     return model
 
+def rec_getattr(model, layer_name):
+    layer_name = layer_name.split('.')
+    pointer = model
+    for name in layer_name:
+        pointer = getattr(pointer, name)
+    return pointer
 
 def gelu(x):
     """Implementation of the gelu activation function.
